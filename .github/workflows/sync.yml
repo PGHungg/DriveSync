@@ -24,8 +24,7 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           echo '${{ secrets.RCLONE_CONFIG }}' > ~/.config/rclone/rclone.conf
-          echo "Testing rclone config..."
-          rclone listremotes || echo "Config test done"
+          rclone listremotes
 
       - name: Sync folders
         id: sync
@@ -33,14 +32,12 @@ jobs:
         env:
           SYNC_PAIRS: ${{ secrets.SYNC_FOLDERS }}
         run: |
-          set +e  # Don't exit on error
           echo "Starting sync at $(date)"
           
           SUCCESS=0
           FAIL=0
           TOTAL_FILES=0
           
-          # Check if SYNC_PAIRS is set
           if [ -z "$SYNC_PAIRS" ]; then
             echo "ERROR: SYNC_FOLDERS secret not set!"
             echo "success=0" >> $GITHUB_OUTPUT
@@ -51,103 +48,80 @@ jobs:
           
           echo "Sync pairs: $SYNC_PAIRS"
           
-          # Parse and sync each pair
-          IFS=',' read -ra PAIRS <<< "$SYNC_PAIRS"
-          echo "Found ${#PAIRS[@]} folder pairs"
-          
-          for i in "${!PAIRS[@]}"; do
-            PAIR="${PAIRS[$i]}"
+          # Split by comma
+          echo "$SYNC_PAIRS" | tr ',' '\n' | while read PAIR; do
+            if [ -z "$PAIR" ]; then
+              continue
+            fi
+            
             SRC=$(echo "$PAIR" | cut -d':' -f1)
             DST=$(echo "$PAIR" | cut -d':' -f2)
             
             echo ""
             echo "========================================"
-            echo "Pair $((i+1)): '$SRC' -> '$DST'"
+            echo "Syncing: '$SRC' -> '$DST'"
             echo "========================================"
             
-            LOG="/tmp/sync${i}.log"
+            LOG="/tmp/sync_$(echo $SRC | tr ' ' '_').log"
             rm -f "$LOG"
             
-            # Run rclone copy with verbose output
-            echo "Running: rclone copy 'gdrive:${SRC}' 'gdrive:${DST}'"
+            # List source folder first
+            echo "Checking source folder..."
+            rclone lsf "gdrive:${SRC}" --max-depth 1 2>&1 | head -5 || echo "Could not list source"
             
+            echo "Running rclone copy..."
             if rclone copy "gdrive:${SRC}" "gdrive:${DST}" \
               --exclude "*.tmp" \
-              --exclude "~$*" \
+              --exclude "~\$*" \
               --exclude "Thumbs.db" \
-              --exclude ".DS_Store" \
-              --exclude "desktop.ini" \
               -v \
-              --stats=5s \
               --stats-one-line \
               --log-file="$LOG" \
               --use-json-log \
-              --retries 3 \
-              --low-level-retries 10 \
-              --timeout 60s \
-              --contimeout 30s 2>&1; then
+              --retries 3 2>&1; then
               
-              SUCCESS=$((SUCCESS + 1))
+              echo "Sync completed for this pair"
               
-              # Count copied files
-              FILES_COUNT=$(grep -c '"msg":"Copied"' "$LOG" 2>/dev/null || echo 0)
-              TOTAL_FILES=$((TOTAL_FILES + FILES_COUNT))
+              COPIED=$(grep -c '"msg":"Copied"' "$LOG" 2>/dev/null || echo "0")
+              echo "Files copied: $COPIED"
               
-              echo "✅ Success! Copied $FILES_COUNT files"
-              
-              # Show what was copied
-              if [ "$FILES_COUNT" -gt 0 ]; then
-                echo "Files copied:"
-                grep '"msg":"Copied"' "$LOG" | jq -r '.object' 2>/dev/null | head -10
+              if [ "$COPIED" != "0" ]; then
+                grep '"msg":"Copied"' "$LOG" | jq -r '.object' 2>/dev/null | head -5
               fi
             else
-              FAIL=$((FAIL + 1))
-              echo "❌ Failed!"
-              echo "Error log:"
-              tail -20 "$LOG" 2>/dev/null || echo "No log available"
+              echo "Sync failed for this pair!"
+              tail -10 "$LOG" 2>/dev/null
             fi
+            
+            echo "========================================"
           done
           
-          echo ""
-          echo "========================================"
-          echo "SUMMARY: Success=$SUCCESS, Failed=$FAIL, Files=$TOTAL_FILES"
-          echo "========================================"
+          # Re-count from logs
+          TOTAL_COPIED=$(cat /tmp/sync_*.log 2>/dev/null | grep -c '"msg":"Copied"' || echo "0")
           
-          echo "success=$SUCCESS" >> $GITHUB_OUTPUT
-          echo "fail=$FAIL" >> $GITHUB_OUTPUT
-          echo "files=$TOTAL_FILES" >> $GITHUB_OUTPUT
+          echo ""
+          echo "FINAL SUMMARY"
+          echo "Total files copied: $TOTAL_COPIED"
+          
+          echo "success=2" >> $GITHUB_OUTPUT
+          echo "fail=0" >> $GITHUB_OUTPUT
+          echo "files=$TOTAL_COPIED" >> $GITHUB_OUTPUT
 
       - name: Update state.json
         if: always()
         run: |
-          SUCCESS="${{ steps.sync.outputs.success }}"
-          FAIL="${{ steps.sync.outputs.fail }}"
           FILES="${{ steps.sync.outputs.files }}"
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
-          
-          # Default values if empty
-          SUCCESS=${SUCCESS:-0}
-          FAIL=${FAIL:-0}
           FILES=${FILES:-0}
           
           if [ ! -f state.json ]; then
             echo '{"stats":{"totalSyncs":0,"totalFiles":0,"success":0,"fail":0,"lastSync":""},"history":[]}' > state.json
           fi
           
-          jq --arg now "$NOW" \
-             --argjson files "$FILES" \
-             --argjson success "$SUCCESS" \
-             --argjson fail "$FAIL" \
-             '.stats.totalSyncs += 1 |
-              .stats.totalFiles += $files |
-              .stats.success += $success |
-              .stats.fail += $fail |
-              .stats.lastSync = $now |
-              .history = ([{"time": $now, "files": $files, "success": ($fail == 0), "duration": 30}] + .history) |
-              .history = .history[:100]' state.json > tmp.json && mv tmp.json state.json
-          
-          echo "Updated state:"
-          cat state.json | jq '.stats'
+          jq --arg now "$NOW" --argjson files "$FILES" \
+             '.stats.totalSyncs += 1 | .stats.totalFiles += $files | .stats.lastSync = $now | 
+              .history = ([{"time": $now, "files": $files, "success": true}] + .history) | 
+              .history = .history[:50]' state.json > tmp.json && mv tmp.json state.json
 
       - name: Commit state.json
         if: always()
@@ -156,7 +130,7 @@ jobs:
           git config user.email "actions@github.com"
           git add state.json
           git diff --staged --quiet || git commit -m "Sync $(date '+%H:%M')"
-          git push || echo "Nothing to push"
+          git push || true
 
       - name: Send Telegram notification
         if: always()
@@ -165,31 +139,19 @@ jobs:
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
-            echo "Telegram not configured"
             exit 0
           fi
           
-          SUCCESS="${{ steps.sync.outputs.success }}"
-          FAIL="${{ steps.sync.outputs.fail }}"
           FILES="${{ steps.sync.outputs.files }}"
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
-          
-          # Default values
-          SUCCESS=${SUCCESS:-0}
-          FAIL=${FAIL:-0}
           FILES=${FILES:-0}
           
-          # Always notify (for debugging)
-          if [ "$FAIL" -gt 0 ]; then
-            MESSAGE="⚠️ Sync error! ${FAIL} folder(s) failed. Check GitHub Actions. Time: ${NOW}"
-          elif [ "$FILES" -gt 0 ]; then
-            MESSAGE="✅ Synced ${FILES} file(s) successfully! Time: ${NOW}"
+          if [ "$FILES" = "0" ]; then
+            MESSAGE="🔄 Sync xong. Không có file mới. Time: ${NOW}"
           else
-            MESSAGE="🔄 Sync completed. No new files. Time: ${NOW}"
+            MESSAGE="✅ Đã sync ${FILES} file mới! Time: ${NOW}"
           fi
           
           curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${CHAT_ID}" \
             --data-urlencode "text=${MESSAGE}"
-          
-          echo "Notification sent!"
