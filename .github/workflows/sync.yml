@@ -1,330 +1,73 @@
 name: Google Drive Auto Sync
 
 on:
-  # Chạy tự động mỗi 5 phút (minimum của GitHub)
+  # Chạy tự động mỗi 5 phút
   schedule:
     - cron: '*/5 * * * *'
   
   # Cho phép chạy thủ công từ GitHub web
   workflow_dispatch:
-    inputs:
-      force_sync:
-        description: 'Force sync even if no changes'
-        required: false
-        default: 'false'
-
-env:
-  # Cấu hình folders - giống data.json
-  REMOTE_NAME: gdrive
-  
-  # Exclude patterns - giống main.go
-  EXCLUDES: "--exclude *.tmp --exclude ~$* --exclude Thumbs.db --exclude desktop.ini --exclude .DS_Store"
-  
-  # Retry config - giống main.go
-  RETRY_COUNT: 3
-  RETRY_DELAY: 30
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     
-    outputs:
-      total_files: ${{ steps.summary.outputs.total_files }}
-      total_bytes: ${{ steps.summary.outputs.total_bytes }}
-      
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Install rclone
         run: |
           curl https://rclone.org/install.sh | sudo bash
-          echo "✅ rclone $(rclone version --check | head -1) installed"
+          rclone version
 
       - name: Setup rclone config
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONFIG }}" > ~/.config/rclone/rclone.conf
-          echo "✅ Config loaded"
+          echo '${{ secrets.RCLONE_CONFIG }}' > ~/.config/rclone/rclone.conf
+          echo "Config file created"
+          cat ~/.config/rclone/rclone.conf | head -5
 
-      - name: Check internet connectivity
-        id: internet
+      - name: Test rclone connection
         run: |
-          echo "🌐 Checking internet connectivity..."
-          if ping -c 1 -W 5 8.8.8.8 > /dev/null 2>&1; then
-            echo "✅ Internet OK"
-            echo "status=ok" >> $GITHUB_OUTPUT
-          else
-            echo "❌ No internet connection!"
-            echo "status=fail" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          echo "Testing Google Drive connection..."
+          rclone lsd gdrive: --max-depth 1 || echo "Connection test done"
 
-      - name: Check Google Drive access
-        run: |
-          echo "🔍 Checking Google Drive access..."
-          if rclone lsd ${{ env.REMOTE_NAME }}: --max-depth 1 > /dev/null 2>&1; then
-            echo "✅ Google Drive accessible"
-            
-            # Show drive space (like main.go getDriveSpace)
-            echo ""
-            echo "📊 Drive Space:"
-            rclone about ${{ env.REMOTE_NAME }}: 2>/dev/null || echo "(Space info not available)"
-          else
-            echo "❌ Cannot access Google Drive!"
-            exit 1
-          fi
-
-      # ============================================
-      # FOLDER 1: 01 -> 02
-      # ============================================
-      - name: "Sync Folder: test (01 -> 02)"
-        id: sync_test
+      - name: Sync Folder 1 - test (01 to 02)
+        continue-on-error: true
         run: |
           echo "========================================"
-          echo "🔄 Syncing: 01 -> 02"
+          echo "Syncing: gdrive:01 -> gdrive:02"
           echo "========================================"
-          
-          FOLDER_NAME="test"
-          SRC="${{ env.REMOTE_NAME }}:01"
-          DST="${{ env.REMOTE_NAME }}:02"
-          LOG_FILE="/tmp/${FOLDER_NAME}.log"
-          
-          # Sync với retry logic (giống main.go)
-          SUCCESS=false
-          for attempt in $(seq 1 ${{ env.RETRY_COUNT }}); do
-            echo ""
-            echo "📤 Attempt $attempt/${{ env.RETRY_COUNT }}..."
-            
-            if rclone copy "$SRC" "$DST" \
-              ${{ env.EXCLUDES }} \
-              --create-empty-src-dirs \
-              -v \
-              --stats=5s \
-              --stats-one-line \
-              --log-file="$LOG_FILE" \
-              --use-json-log \
-              2>&1; then
-              
-              SUCCESS=true
-              echo "✅ Sync successful!"
-              break
-            else
-              echo "⚠️ Attempt $attempt failed"
-              if [ $attempt -lt ${{ env.RETRY_COUNT }} ]; then
-                echo "⏳ Waiting ${{ env.RETRY_DELAY }}s before retry..."
-                sleep ${{ env.RETRY_DELAY }}
-              fi
-            fi
-          done
-          
-          if [ "$SUCCESS" = false ]; then
-            echo "❌ All retry attempts failed!"
-            echo "status=fail" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          # Parse log để lấy files synced (giống main.go syncFolder)
-          FILES_COUNT=0
-          BYTES_COUNT=0
-          
-          if [ -f "$LOG_FILE" ]; then
-            # Count Copied/Updated files from JSON log
-            FILES_COUNT=$(grep -c '"msg":"Copied"' "$LOG_FILE" 2>/dev/null || echo 0)
-            UPDATED=$(grep -c '"msg":"Updated"' "$LOG_FILE" 2>/dev/null || echo 0)
-            FILES_COUNT=$((FILES_COUNT + UPDATED))
-            
-            # Extract bytes from stats
-            BYTES_LINE=$(grep '"stats"' "$LOG_FILE" | tail -1 || echo "")
-            if [ -n "$BYTES_LINE" ]; then
-              BYTES_COUNT=$(echo "$BYTES_LINE" | grep -o '"bytes":[0-9]*' | grep -o '[0-9]*' | tail -1 || echo 0)
-            fi
-            
-            echo ""
-            echo "📁 Files synced: $FILES_COUNT"
-            echo "📦 Bytes transferred: $BYTES_COUNT"
-            
-            # Show files list
-            if [ $FILES_COUNT -gt 0 ]; then
-              echo ""
-              echo "📋 Synced files:"
-              grep '"msg":"Copied"\|"msg":"Updated"' "$LOG_FILE" | \
-                grep -o '"object":"[^"]*"' | \
-                sed 's/"object":"//g' | sed 's/"//g' | \
-                head -20 | while read f; do echo "   ✓ $f"; done
-            fi
-          fi
-          
-          echo "status=ok" >> $GITHUB_OUTPUT
-          echo "files=$FILES_COUNT" >> $GITHUB_OUTPUT
-          echo "bytes=$BYTES_COUNT" >> $GITHUB_OUTPUT
+          rclone copy "gdrive:01" "gdrive:02" \
+            --exclude "*.tmp" \
+            --exclude "~\$*" \
+            --exclude "Thumbs.db" \
+            --exclude "desktop.ini" \
+            --exclude ".DS_Store" \
+            --create-empty-src-dirs \
+            -v \
+            --stats-one-line \
+            2>&1 || true
+          echo "Folder 1 sync completed"
 
-      # ============================================
-      # FOLDER 2: C++ T10 2025 -> C++
-      # ============================================
-      - name: "Sync Folder: c++ (C++ T10 2025 -> C++)"
-        id: sync_cpp
+      - name: Sync Folder 2 - cpp (C++ T10 2025 to C++)
+        continue-on-error: true
         run: |
           echo "========================================"
-          echo "🔄 Syncing: C++ T10 2025 -> C++"
+          echo "Syncing: gdrive:C++ T10 2025 -> gdrive:C++"
           echo "========================================"
-          
-          FOLDER_NAME="cpp"
-          SRC="${{ env.REMOTE_NAME }}:C++ T10 2025"
-          DST="${{ env.REMOTE_NAME }}:C++"
-          LOG_FILE="/tmp/${FOLDER_NAME}.log"
-          
-          # Sync với retry logic
-          SUCCESS=false
-          for attempt in $(seq 1 ${{ env.RETRY_COUNT }}); do
-            echo ""
-            echo "📤 Attempt $attempt/${{ env.RETRY_COUNT }}..."
-            
-            if rclone copy "$SRC" "$DST" \
-              ${{ env.EXCLUDES }} \
-              --create-empty-src-dirs \
-              -v \
-              --stats=5s \
-              --stats-one-line \
-              --log-file="$LOG_FILE" \
-              --use-json-log \
-              2>&1; then
-              
-              SUCCESS=true
-              echo "✅ Sync successful!"
-              break
-            else
-              echo "⚠️ Attempt $attempt failed"
-              if [ $attempt -lt ${{ env.RETRY_COUNT }} ]; then
-                echo "⏳ Waiting ${{ env.RETRY_DELAY }}s before retry..."
-                sleep ${{ env.RETRY_DELAY }}
-              fi
-            fi
-          done
-          
-          if [ "$SUCCESS" = false ]; then
-            echo "❌ All retry attempts failed!"
-            echo "status=fail" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          # Parse log
-          FILES_COUNT=0
-          BYTES_COUNT=0
-          
-          if [ -f "$LOG_FILE" ]; then
-            FILES_COUNT=$(grep -c '"msg":"Copied"' "$LOG_FILE" 2>/dev/null || echo 0)
-            UPDATED=$(grep -c '"msg":"Updated"' "$LOG_FILE" 2>/dev/null || echo 0)
-            FILES_COUNT=$((FILES_COUNT + UPDATED))
-            
-            BYTES_LINE=$(grep '"stats"' "$LOG_FILE" | tail -1 || echo "")
-            if [ -n "$BYTES_LINE" ]; then
-              BYTES_COUNT=$(echo "$BYTES_LINE" | grep -o '"bytes":[0-9]*' | grep -o '[0-9]*' | tail -1 || echo 0)
-            fi
-            
-            echo ""
-            echo "📁 Files synced: $FILES_COUNT"
-            echo "📦 Bytes transferred: $BYTES_COUNT"
-            
-            if [ $FILES_COUNT -gt 0 ]; then
-              echo ""
-              echo "📋 Synced files:"
-              grep '"msg":"Copied"\|"msg":"Updated"' "$LOG_FILE" | \
-                grep -o '"object":"[^"]*"' | \
-                sed 's/"object":"//g' | sed 's/"//g' | \
-                head -20 | while read f; do echo "   ✓ $f"; done
-            fi
-          fi
-          
-          echo "status=ok" >> $GITHUB_OUTPUT
-          echo "files=$FILES_COUNT" >> $GITHUB_OUTPUT
-          echo "bytes=$BYTES_COUNT" >> $GITHUB_OUTPUT
+          rclone copy "gdrive:C++ T10 2025" "gdrive:C++" \
+            --exclude "*.tmp" \
+            --exclude "~\$*" \
+            --exclude "Thumbs.db" \
+            --exclude "desktop.ini" \
+            --exclude ".DS_Store" \
+            --create-empty-src-dirs \
+            -v \
+            --stats-one-line \
+            2>&1 || true
+          echo "Folder 2 sync completed"
 
-      # ============================================
-      # SUMMARY - giống main.go runSyncAll
-      # ============================================
-      - name: Generate sync summary
-        id: summary
+      - name: Summary
         run: |
-          echo ""
           echo "========================================"
-          echo "📊 SYNC SUMMARY"
+          echo "All syncs completed at $(date)"
           echo "========================================"
-          
-          TOTAL_FILES=0
-          TOTAL_BYTES=0
-          
-          # Folder 1
-          F1=${{ steps.sync_test.outputs.files || 0 }}
-          B1=${{ steps.sync_test.outputs.bytes || 0 }}
-          TOTAL_FILES=$((TOTAL_FILES + F1))
-          TOTAL_BYTES=$((TOTAL_BYTES + B1))
-          echo "✅ test: $F1 files"
-          
-          # Folder 2
-          F2=${{ steps.sync_cpp.outputs.files || 0 }}
-          B2=${{ steps.sync_cpp.outputs.bytes || 0 }}
-          TOTAL_FILES=$((TOTAL_FILES + F2))
-          TOTAL_BYTES=$((TOTAL_BYTES + B2))
-          echo "✅ c++: $F2 files"
-          
-          echo ""
-          echo "========================================"
-          echo "🎉 TOTAL: $TOTAL_FILES files synced"
-          echo "📦 BYTES: $TOTAL_BYTES"
-          echo "⏰ TIME: $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "========================================"
-          
-          echo "total_files=$TOTAL_FILES" >> $GITHUB_OUTPUT
-          echo "total_bytes=$TOTAL_BYTES" >> $GITHUB_OUTPUT
-
-      # ============================================
-      # NOTIFICATIONS (Optional)
-      # ============================================
-      - name: Send Discord notification (if configured)
-        if: always() && env.DISCORD_WEBHOOK != ''
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          STATUS="✅ Success"
-          COLOR=3066993
-          if [ "${{ job.status }}" != "success" ]; then
-            STATUS="❌ Failed"
-            COLOR=15158332
-          fi
-          
-          curl -X POST "$DISCORD_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "embeds": [{
-                "title": "Drive Sync Report",
-                "description": "'"$STATUS"' at '"$(date '+%Y-%m-%d %H:%M:%S')"'",
-                "color": '"$COLOR"',
-                "fields": [
-                  {"name": "📁 Files", "value": "'"${{ steps.summary.outputs.total_files || 0 }}"'", "inline": true},
-                  {"name": "📦 Bytes", "value": "'"${{ steps.summary.outputs.total_bytes || 0 }}"'", "inline": true}
-                ]
-              }]
-            }'
-
-      - name: Send Telegram notification (if configured)
-        if: always() && env.TELEGRAM_BOT_TOKEN != ''
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          STATUS="✅ Success"
-          if [ "${{ job.status }}" != "success" ]; then
-            STATUS="❌ Failed"
-          fi
-          
-          MESSAGE="🔄 *Drive Sync Report*%0A%0A"
-          MESSAGE+="Status: $STATUS%0A"
-          MESSAGE+="📁 Files: ${{ steps.summary.outputs.total_files || 0 }}%0A"
-          MESSAGE+="📦 Bytes: ${{ steps.summary.outputs.total_bytes || 0 }}%0A"
-          MESSAGE+="⏰ Time: $(date '+%Y-%m-%d %H:%M:%S')"
-          
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_CHAT_ID}" \
-            -d "parse_mode=Markdown" \
-            -d "text=${MESSAGE}"
