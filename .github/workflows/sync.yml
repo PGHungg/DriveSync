@@ -58,17 +58,32 @@ jobs:
               -v --log-file="$LOG1" --use-json-log --retries 3 2>&1 || true
             
             # Show log content for debug
-            echo "=== RCLONE LOG PAIR 1 ==="
-            cat "$LOG1" | head -20 || true
-            echo "========================="
+            echo "=== FULL RCLONE LOG PAIR 1 ==="
+            cat "$LOG1" || true
+            echo "=== END LOG ==="
             
-            C1=$(grep -c '"msg":"Copied"' "$LOG1" 2>/dev/null || true)
+            # Try multiple patterns
+            C1=$(grep -c '"msg":"Copied"' "$LOG1" 2>/dev/null || echo "0")
+            echo "Pattern 1 (msg:Copied): $C1"
+            C1b=$(grep -ci 'copied' "$LOG1" 2>/dev/null || echo "0")
+            echo "Pattern 2 (copied case-insensitive): $C1b"
+            C1c=$(grep -c 'Transferred:' "$LOG1" 2>/dev/null || echo "0")
+            echo "Pattern 3 (Transferred): $C1c"
+            
+            # Use the best count
             C1=${C1:-0}
-            echo "Pair 1 copied: $C1 files"
+            if [ "$C1" = "0" ]; then
+              # Fallback: count lines with "object" in JSON log
+              C1=$(grep -c '"object"' "$LOG1" 2>/dev/null || echo "0")
+            fi
+            C1=${C1:-0}
+            echo "Pair 1 final count: $C1 files"
             TOTAL=$((TOTAL + C1))
             
             # Lấy tên file đã copy
             grep '"msg":"Copied"' "$LOG1" 2>/dev/null | jq -r '.object' >> "$FILELIST" || true
+            # Fallback: get any object names
+            grep '"object"' "$LOG1" 2>/dev/null | jq -r '.object' >> "$FILELIST" || true
           fi
           
           # Sync pair 2
