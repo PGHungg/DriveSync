@@ -49,9 +49,18 @@ jobs:
             DST1=$(echo "$PAIR1" | cut -d':' -f2)
             echo "Pair 1: $SRC1 -> $DST1"
             
+            # List source files first
+            echo "Files in source:"
+            rclone lsf "gdrive:${SRC1}" 2>&1 || true
+            
             rclone copy "gdrive:${SRC1}" "gdrive:${DST1}" \
               --exclude "*.tmp" --exclude "Thumbs.db" \
               -v --log-file="$LOG1" --use-json-log --retries 3 2>&1 || true
+            
+            # Show log content for debug
+            echo "=== RCLONE LOG PAIR 1 ==="
+            cat "$LOG1" | head -20 || true
+            echo "========================="
             
             C1=$(grep -c '"msg":"Copied"' "$LOG1" 2>/dev/null || true)
             C1=${C1:-0}
