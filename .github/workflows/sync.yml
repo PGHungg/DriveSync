@@ -49,41 +49,32 @@ jobs:
             DST1=$(echo "$PAIR1" | cut -d':' -f2)
             echo "Pair 1: $SRC1 -> $DST1"
             
-            # List source files first
-            echo "Files in source:"
+            # List source files
+            echo "Files in source $SRC1:"
             rclone lsf "gdrive:${SRC1}" 2>&1 || true
             
+            # List dest files BEFORE sync
+            echo "Files in dest $DST1 BEFORE:"
+            rclone lsf "gdrive:${DST1}" 2>&1 || true
+            BEFORE1=$(rclone lsf "gdrive:${DST1}" 2>/dev/null | wc -l)
+            
+            # Do the sync
             rclone copy "gdrive:${SRC1}" "gdrive:${DST1}" \
               --exclude "*.tmp" --exclude "Thumbs.db" \
-              -v --log-file="$LOG1" --use-json-log --retries 3 2>&1 || true
+              -v --stats-one-line --stats 0 --retries 3 2>&1 | tee "$LOG1" || true
             
-            # Show log content for debug
-            echo "=== FULL RCLONE LOG PAIR 1 ==="
-            cat "$LOG1" || true
-            echo "=== END LOG ==="
+            # List dest files AFTER sync
+            AFTER1=$(rclone lsf "gdrive:${DST1}" 2>/dev/null | wc -l)
+            C1=$((AFTER1 - BEFORE1))
+            if [ "$C1" -lt 0 ]; then C1=0; fi
             
-            # Try multiple patterns
-            C1=$(grep -c '"msg":"Copied"' "$LOG1" 2>/dev/null || echo "0")
-            echo "Pattern 1 (msg:Copied): $C1"
-            C1b=$(grep -ci 'copied' "$LOG1" 2>/dev/null || echo "0")
-            echo "Pattern 2 (copied case-insensitive): $C1b"
-            C1c=$(grep -c 'Transferred:' "$LOG1" 2>/dev/null || echo "0")
-            echo "Pattern 3 (Transferred): $C1c"
-            
-            # Use the best count
-            C1=${C1:-0}
-            if [ "$C1" = "0" ]; then
-              # Fallback: count lines with "object" in JSON log
-              C1=$(grep -c '"object"' "$LOG1" 2>/dev/null || echo "0")
-            fi
-            C1=${C1:-0}
-            echo "Pair 1 final count: $C1 files"
+            echo "Pair 1: Before=$BEFORE1, After=$AFTER1, Copied=$C1"
             TOTAL=$((TOTAL + C1))
             
-            # Lấy tên file đã copy
-            grep '"msg":"Copied"' "$LOG1" 2>/dev/null | jq -r '.object' >> "$FILELIST" || true
-            # Fallback: get any object names
-            grep '"object"' "$LOG1" 2>/dev/null | jq -r '.object' >> "$FILELIST" || true
+            # Get file names from source (for notification)
+            if [ "$C1" -gt 0 ]; then
+              rclone lsf "gdrive:${SRC1}" 2>/dev/null | head -10 >> "$FILELIST" || true
+            fi
           fi
           
           # Sync pair 2
@@ -92,17 +83,26 @@ jobs:
             DST2=$(echo "$PAIR2" | cut -d':' -f2)
             echo "Pair 2: $SRC2 -> $DST2"
             
+            # Count dest files BEFORE sync
+            BEFORE2=$(rclone lsf "gdrive:${DST2}" 2>/dev/null | wc -l)
+            
+            # Do the sync
             rclone copy "gdrive:${SRC2}" "gdrive:${DST2}" \
               --exclude "*.tmp" --exclude "Thumbs.db" \
-              -v --log-file="$LOG2" --use-json-log --retries 3 2>&1 || true
+              -v --stats-one-line --stats 0 --retries 3 2>&1 | tee "$LOG2" || true
             
-            C2=$(grep -c '"msg":"Copied"' "$LOG2" 2>/dev/null || true)
-            C2=${C2:-0}
-            echo "Pair 2 copied: $C2 files"
+            # Count dest files AFTER sync
+            AFTER2=$(rclone lsf "gdrive:${DST2}" 2>/dev/null | wc -l)
+            C2=$((AFTER2 - BEFORE2))
+            if [ "$C2" -lt 0 ]; then C2=0; fi
+            
+            echo "Pair 2: Before=$BEFORE2, After=$AFTER2, Copied=$C2"
             TOTAL=$((TOTAL + C2))
             
-            # Lấy tên file đã copy
-            grep '"msg":"Copied"' "$LOG2" 2>/dev/null | jq -r '.object' >> "$FILELIST" || true
+            # Get file names for notification
+            if [ "$C2" -gt 0 ]; then
+              rclone lsf "gdrive:${SRC2}" 2>/dev/null | head -10 >> "$FILELIST" || true
+            fi
           fi
           
           echo "TOTAL FILES COPIED: $TOTAL"
