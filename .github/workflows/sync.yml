@@ -97,14 +97,18 @@ jobs:
           done
           
           # Re-count from logs
-          TOTAL_COPIED=$(cat /tmp/sync_*.log 2>/dev/null | grep -c '"msg":"Copied"' || echo "0")
+          TOTAL_COPIED=0
+          for logfile in /tmp/sync_*.log; do
+            if [ -f "$logfile" ]; then
+              COUNT=$(grep -c '"msg":"Copied"' "$logfile" 2>/dev/null || true)
+              TOTAL_COPIED=$((TOTAL_COPIED + COUNT))
+            fi
+          done
           
           echo ""
           echo "FINAL SUMMARY"
           echo "Total files copied: $TOTAL_COPIED"
           
-          echo "success=2" >> $GITHUB_OUTPUT
-          echo "fail=0" >> $GITHUB_OUTPUT
           echo "files=$TOTAL_COPIED" >> $GITHUB_OUTPUT
 
       - name: Update state.json
