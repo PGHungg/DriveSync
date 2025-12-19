@@ -24,74 +24,111 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           echo '${{ secrets.RCLONE_CONFIG }}' > ~/.config/rclone/rclone.conf
+          echo "Testing rclone config..."
+          rclone listremotes || echo "Config test done"
 
       - name: Sync folders
         id: sync
+        continue-on-error: true
         env:
           SYNC_PAIRS: ${{ secrets.SYNC_FOLDERS }}
         run: |
-          echo "Starting sync..."
+          set +e  # Don't exit on error
+          echo "Starting sync at $(date)"
           
           SUCCESS=0
           FAIL=0
           TOTAL_FILES=0
-          FILE_LIST=""
           
-          # Parse sync pairs from secret (format: "src1:dst1,src2:dst2")
-          # Default if not set
+          # Check if SYNC_PAIRS is set
           if [ -z "$SYNC_PAIRS" ]; then
-            SYNC_PAIRS="folder1:folder2"
+            echo "ERROR: SYNC_FOLDERS secret not set!"
+            echo "success=0" >> $GITHUB_OUTPUT
+            echo "fail=1" >> $GITHUB_OUTPUT
+            echo "files=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
+          echo "Sync pairs: $SYNC_PAIRS"
+          
+          # Parse and sync each pair
           IFS=',' read -ra PAIRS <<< "$SYNC_PAIRS"
+          echo "Found ${#PAIRS[@]} folder pairs"
           
           for i in "${!PAIRS[@]}"; do
             PAIR="${PAIRS[$i]}"
             SRC=$(echo "$PAIR" | cut -d':' -f1)
             DST=$(echo "$PAIR" | cut -d':' -f2)
             
+            echo ""
             echo "========================================"
-            echo "Syncing pair $((i+1))..."
+            echo "Pair $((i+1)): '$SRC' -> '$DST'"
+            echo "========================================"
+            
             LOG="/tmp/sync${i}.log"
+            rm -f "$LOG"
+            
+            # Run rclone copy with verbose output
+            echo "Running: rclone copy 'gdrive:${SRC}' 'gdrive:${DST}'"
             
             if rclone copy "gdrive:${SRC}" "gdrive:${DST}" \
-              --exclude "*.tmp" --exclude "Thumbs.db" \
-              -v --stats-one-line \
-              --log-file="$LOG" --use-json-log 2>&1; then
+              --exclude "*.tmp" \
+              --exclude "~$*" \
+              --exclude "Thumbs.db" \
+              --exclude ".DS_Store" \
+              --exclude "desktop.ini" \
+              -v \
+              --stats=5s \
+              --stats-one-line \
+              --log-file="$LOG" \
+              --use-json-log \
+              --retries 3 \
+              --low-level-retries 10 \
+              --timeout 60s \
+              --contimeout 30s 2>&1; then
+              
               SUCCESS=$((SUCCESS + 1))
               
+              # Count copied files
               FILES_COUNT=$(grep -c '"msg":"Copied"' "$LOG" 2>/dev/null || echo 0)
               TOTAL_FILES=$((TOTAL_FILES + FILES_COUNT))
               
-              if [ "$FILES_COUNT" -gt 0 ]; then
-                DETAILS=$(grep '"msg":"Copied"' "$LOG" | jq -r '.object' 2>/dev/null | head -5)
-                FILE_LIST="${FILE_LIST}Folder $((i+1)): ${FILES_COUNT} files\n"
-              fi
+              echo "✅ Success! Copied $FILES_COUNT files"
               
-              echo "Success! Files: $FILES_COUNT"
+              # Show what was copied
+              if [ "$FILES_COUNT" -gt 0 ]; then
+                echo "Files copied:"
+                grep '"msg":"Copied"' "$LOG" | jq -r '.object' 2>/dev/null | head -10
+              fi
             else
               FAIL=$((FAIL + 1))
-              echo "Failed!"
+              echo "❌ Failed!"
+              echo "Error log:"
+              tail -20 "$LOG" 2>/dev/null || echo "No log available"
             fi
           done
           
+          echo ""
           echo "========================================"
-          echo "Summary: Success=$SUCCESS, Failed=$FAIL, Files=$TOTAL_FILES"
+          echo "SUMMARY: Success=$SUCCESS, Failed=$FAIL, Files=$TOTAL_FILES"
+          echo "========================================"
           
           echo "success=$SUCCESS" >> $GITHUB_OUTPUT
           echo "fail=$FAIL" >> $GITHUB_OUTPUT
           echo "files=$TOTAL_FILES" >> $GITHUB_OUTPUT
-          
-          echo "file_list<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$FILE_LIST" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Update state.json
+        if: always()
         run: |
-          SUCCESS=${{ steps.sync.outputs.success }}
-          FAIL=${{ steps.sync.outputs.fail }}
-          FILES=${{ steps.sync.outputs.files }}
+          SUCCESS="${{ steps.sync.outputs.success }}"
+          FAIL="${{ steps.sync.outputs.fail }}"
+          FILES="${{ steps.sync.outputs.files }}"
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
+          
+          # Default values if empty
+          SUCCESS=${SUCCESS:-0}
+          FAIL=${FAIL:-0}
+          FILES=${FILES:-0}
           
           if [ ! -f state.json ]; then
             echo '{"stats":{"totalSyncs":0,"totalFiles":0,"success":0,"fail":0,"lastSync":""},"history":[]}' > state.json
@@ -109,14 +146,16 @@ jobs:
               .history = ([{"time": $now, "files": $files, "success": ($fail == 0), "duration": 30}] + .history) |
               .history = .history[:100]' state.json > tmp.json && mv tmp.json state.json
           
+          echo "Updated state:"
           cat state.json | jq '.stats'
 
       - name: Commit state.json
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add state.json
-          git diff --staged --quiet || git commit -m "Update $(date '+%H:%M')"
+          git diff --staged --quiet || git commit -m "Sync $(date '+%H:%M')"
           git push || echo "Nothing to push"
 
       - name: Send Telegram notification
@@ -130,23 +169,27 @@ jobs:
             exit 0
           fi
           
-          SUCCESS=${{ steps.sync.outputs.success }}
-          FAIL=${{ steps.sync.outputs.fail }}
-          FILES=${{ steps.sync.outputs.files }}
-          FILE_LIST='${{ steps.sync.outputs.file_list }}'
+          SUCCESS="${{ steps.sync.outputs.success }}"
+          FAIL="${{ steps.sync.outputs.fail }}"
+          FILES="${{ steps.sync.outputs.files }}"
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
           
-          GREETINGS=("Hey" "Hi" "Yo" "Hello")
-          GREETING=${GREETINGS[$((RANDOM % 4))]}
+          # Default values
+          SUCCESS=${SUCCESS:-0}
+          FAIL=${FAIL:-0}
+          FILES=${FILES:-0}
           
-          if [ "$FILES" -gt 0 ] || [ "$FAIL" -gt 0 ]; then
-            if [ "$FAIL" -gt 0 ]; then
-              MESSAGE="${GREETING}! Sync error: ${FAIL} failed. Time: ${NOW}"
-            else
-              MESSAGE="${GREETING}! ${FILES} files synced. Time: ${NOW}"
-            fi
-            
-            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-              --data-urlencode "chat_id=${CHAT_ID}" \
-              --data-urlencode "text=${MESSAGE}"
+          # Always notify (for debugging)
+          if [ "$FAIL" -gt 0 ]; then
+            MESSAGE="⚠️ Sync error! ${FAIL} folder(s) failed. Check GitHub Actions. Time: ${NOW}"
+          elif [ "$FILES" -gt 0 ]; then
+            MESSAGE="✅ Synced ${FILES} file(s) successfully! Time: ${NOW}"
+          else
+            MESSAGE="🔄 Sync completed. No new files. Time: ${NOW}"
           fi
+          
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}"
+          
+          echo "Notification sent!"
