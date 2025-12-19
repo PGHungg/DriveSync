@@ -27,64 +27,53 @@ jobs:
 
       - name: Sync folders
         id: sync
+        env:
+          SYNC_PAIRS: ${{ secrets.SYNC_FOLDERS }}
         run: |
           echo "Starting sync..."
           
           SUCCESS=0
           FAIL=0
           TOTAL_FILES=0
-          TOTAL_BYTES=0
           FILE_LIST=""
           
-          # Folder 1: 01 -> 02
-          echo "========================================"
-          echo "Syncing: 01 -> 02"
-          LOG1="/tmp/sync1.log"
-          if rclone copy "gdrive:01" "gdrive:02" \
-            --exclude "*.tmp" --exclude "Thumbs.db" \
-            -v --stats-one-line \
-            --log-file="$LOG1" --use-json-log 2>&1; then
-            SUCCESS=$((SUCCESS + 1))
-            
-            # Extract file details from log
-            FILES1=$(grep -c '"msg":"Copied"' "$LOG1" 2>/dev/null || echo 0)
-            TOTAL_FILES=$((TOTAL_FILES + FILES1))
-            
-            # Get file names and sizes
-            if [ "$FILES1" -gt 0 ]; then
-              DETAILS1=$(grep '"msg":"Copied"' "$LOG1" | jq -r '"\(.object) (\(.size // 0) bytes)"' 2>/dev/null | head -5)
-              FILE_LIST="${FILE_LIST}📂 01 -> 02:\n${DETAILS1}\n"
-            fi
-            
-            echo "Success! Files: $FILES1"
-          else
-            FAIL=$((FAIL + 1))
-            echo "Failed!"
+          # Parse sync pairs from secret (format: "src1:dst1,src2:dst2")
+          # Default if not set
+          if [ -z "$SYNC_PAIRS" ]; then
+            SYNC_PAIRS="folder1:folder2"
           fi
           
-          # Folder 2: C++ T10 2025 -> C++
-          echo "========================================"
-          echo "Syncing: C++ T10 2025 -> C++"
-          LOG2="/tmp/sync2.log"
-          if rclone copy "gdrive:C++ T10 2025" "gdrive:C++" \
-            --exclude "*.tmp" --exclude "Thumbs.db" \
-            -v --stats-one-line \
-            --log-file="$LOG2" --use-json-log 2>&1; then
-            SUCCESS=$((SUCCESS + 1))
+          IFS=',' read -ra PAIRS <<< "$SYNC_PAIRS"
+          
+          for i in "${!PAIRS[@]}"; do
+            PAIR="${PAIRS[$i]}"
+            SRC=$(echo "$PAIR" | cut -d':' -f1)
+            DST=$(echo "$PAIR" | cut -d':' -f2)
             
-            FILES2=$(grep -c '"msg":"Copied"' "$LOG2" 2>/dev/null || echo 0)
-            TOTAL_FILES=$((TOTAL_FILES + FILES2))
+            echo "========================================"
+            echo "Syncing pair $((i+1))..."
+            LOG="/tmp/sync${i}.log"
             
-            if [ "$FILES2" -gt 0 ]; then
-              DETAILS2=$(grep '"msg":"Copied"' "$LOG2" | jq -r '"\(.object) (\(.size // 0) bytes)"' 2>/dev/null | head -5)
-              FILE_LIST="${FILE_LIST}📂 C++ -> C++:\n${DETAILS2}\n"
+            if rclone copy "gdrive:${SRC}" "gdrive:${DST}" \
+              --exclude "*.tmp" --exclude "Thumbs.db" \
+              -v --stats-one-line \
+              --log-file="$LOG" --use-json-log 2>&1; then
+              SUCCESS=$((SUCCESS + 1))
+              
+              FILES_COUNT=$(grep -c '"msg":"Copied"' "$LOG" 2>/dev/null || echo 0)
+              TOTAL_FILES=$((TOTAL_FILES + FILES_COUNT))
+              
+              if [ "$FILES_COUNT" -gt 0 ]; then
+                DETAILS=$(grep '"msg":"Copied"' "$LOG" | jq -r '.object' 2>/dev/null | head -5)
+                FILE_LIST="${FILE_LIST}Folder $((i+1)): ${FILES_COUNT} files\n"
+              fi
+              
+              echo "Success! Files: $FILES_COUNT"
+            else
+              FAIL=$((FAIL + 1))
+              echo "Failed!"
             fi
-            
-            echo "Success! Files: $FILES2"
-          else
-            FAIL=$((FAIL + 1))
-            echo "Failed!"
-          fi
+          done
           
           echo "========================================"
           echo "Summary: Success=$SUCCESS, Failed=$FAIL, Files=$TOTAL_FILES"
@@ -93,7 +82,6 @@ jobs:
           echo "fail=$FAIL" >> $GITHUB_OUTPUT
           echo "files=$TOTAL_FILES" >> $GITHUB_OUTPUT
           
-          # Save file list for notification
           echo "file_list<<EOF" >> $GITHUB_OUTPUT
           echo -e "$FILE_LIST" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -128,7 +116,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add state.json
-          git diff --staged --quiet || git commit -m "📊 Update stats $(date '+%H:%M')"
+          git diff --staged --quiet || git commit -m "Update $(date '+%H:%M')"
           git push || echo "Nothing to push"
 
       - name: Send Telegram notification
@@ -148,32 +136,16 @@ jobs:
           FILE_LIST='${{ steps.sync.outputs.file_list }}'
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
           
-          # Fun greetings array
-          GREETINGS=("Thầy ơi" "Báo cáo thầy" "Tin vui nè thầy" "Thầy ơi thầy" "Ê thầy")
-          EMOJIS=("📚" "🎉" "✨" "🚀" "💪" "🔥")
-          GREETING=${GREETINGS[$((RANDOM % 5))]}
-          EMOJI=${EMOJIS[$((RANDOM % 6))]}
+          GREETINGS=("Hey" "Hi" "Yo" "Hello")
+          GREETING=${GREETINGS[$((RANDOM % 4))]}
           
           if [ "$FILES" -gt 0 ] || [ "$FAIL" -gt 0 ]; then
             if [ "$FAIL" -gt 0 ]; then
-              MESSAGE="⚠️ ${GREETING}, có lỗi khi sync rồi! ❌ ${FAIL} folder bị lỗi. Kiểm tra GitHub Actions nhé! Time: ${NOW}"
+              MESSAGE="${GREETING}! Sync error: ${FAIL} failed. Time: ${NOW}"
             else
-              # Build detailed message
-              MESSAGE="${EMOJI} ${GREETING}, có ${FILES} file mới được sync! ✅"
-              
-              if [ -n "$FILE_LIST" ] && [ "$FILE_LIST" != "" ]; then
-                MESSAGE="${MESSAGE}
-
-📋 Chi tiết:
-${FILE_LIST}"
-              fi
-              
-              MESSAGE="${MESSAGE}
-⏰ ${NOW}
-💾 Dữ liệu an toàn rồi nha! �"
+              MESSAGE="${GREETING}! ${FILES} files synced. Time: ${NOW}"
             fi
             
-            # Send with proper encoding
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${CHAT_ID}" \
               --data-urlencode "text=${MESSAGE}"
