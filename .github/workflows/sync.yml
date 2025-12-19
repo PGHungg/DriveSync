@@ -36,6 +36,8 @@ jobs:
           TOTAL=0
           LOG1="/tmp/sync1.log"
           LOG2="/tmp/sync2.log"
+          FILELIST="/tmp/files.txt"
+          > "$FILELIST"
           
           # Parse pairs
           PAIR1=$(echo "$SYNC_PAIRS" | cut -d',' -f1)
@@ -54,6 +56,9 @@ jobs:
             C1=$(grep -c '"msg":"Copied"' "$LOG1" 2>/dev/null || echo 0)
             echo "Pair 1 copied: $C1 files"
             TOTAL=$((TOTAL + C1))
+            
+            # Lấy tên file đã copy
+            grep '"msg":"Copied"' "$LOG1" 2>/dev/null | jq -r '.object' >> "$FILELIST" || true
           fi
           
           # Sync pair 2
@@ -69,10 +74,17 @@ jobs:
             C2=$(grep -c '"msg":"Copied"' "$LOG2" 2>/dev/null || echo 0)
             echo "Pair 2 copied: $C2 files"
             TOTAL=$((TOTAL + C2))
+            
+            # Lấy tên file đã copy
+            grep '"msg":"Copied"' "$LOG2" 2>/dev/null | jq -r '.object' >> "$FILELIST" || true
           fi
           
           echo "TOTAL FILES COPIED: $TOTAL"
           echo "files=$TOTAL" >> $GITHUB_OUTPUT
+          
+          # Lưu danh sách file (tối đa 10 file để tránh tin nhắn quá dài)
+          NAMES=$(head -10 "$FILELIST" | tr '\n' '|')
+          echo "filenames=$NAMES" >> $GITHUB_OUTPUT
 
       - name: Update state.json
         if: always()
@@ -110,15 +122,39 @@ jobs:
           fi
           
           FILES="${{ steps.sync.outputs.files }}"
+          FILENAMES="${{ steps.sync.outputs.filenames }}"
           NOW=$(date '+%H:%M:%S')
           FILES=${FILES:-0}
           
-          if [ "$FILES" = "0" ] || [ -z "$FILES" ]; then
-            MESSAGE="🔄 Sync hoàn tất - Không có file mới (${NOW})"
-          else
-            MESSAGE="✅ Đã sync ${FILES} file! (${NOW})"
+          # Chỉ gửi thông báo khi có file mới
+          if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
+            # Nhiều kiểu chào ngẫu nhiên
+            GREETINGS=(
+              "📢 Thầy ơi có file mới!"
+              "🎉 Ting ting! File mới nè thầy!"
+              "📬 Thầy ơi, có bài nộp rồi!"
+              "🔔 Thầy ơi! Có file mới sync!"
+              "✨ Wow! File mới đã đến!"
+              "📥 Alert: File mới cho thầy!"
+              "🚀 Có file mới sync xong rồi thầy!"
+              "💌 Thầy ơi có quà (file mới)!"
+            )
+            GREETING="${GREETINGS[$((RANDOM % ${#GREETINGS[@]}))]}"
+            
+            # Tạo danh sách file
+            FILELIST=""
+            if [ -n "$FILENAMES" ]; then
+              IFS='|' read -ra NAMES <<< "$FILENAMES"
+              for name in "${NAMES[@]}"; do
+                if [ -n "$name" ]; then
+                  FILELIST="${FILELIST}"$'\n'"📄 ${name}"
+                fi
+              done
+            fi
+            
+            MESSAGE="${GREETING}"$'\n\n'"🔄 Đã sync ${FILES} file (${NOW})${FILELIST}"
+            
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${CHAT_ID}" \
+              --data-urlencode "text=${MESSAGE}"
           fi
-          
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${CHAT_ID}" \
-            --data-urlencode "text=${MESSAGE}"
