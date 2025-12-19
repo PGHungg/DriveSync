@@ -149,6 +149,12 @@ jobs:
           
           echo "DEBUG: FILES=$FILES, FILENAMES=$FILENAMES"
           
+          # TEST: Luôn gửi thông báo để verify Telegram hoạt động
+          TEST_MSG="[TEST] Sync check luc ${NOW} - FILES=${FILES}"
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${TEST_MSG}"
+          
           # Gửi thông báo khi có file mới
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
             # Nhiều kiểu chào ngẫu nhiên
