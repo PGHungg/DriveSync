@@ -130,14 +130,14 @@ jobs:
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
             # Nhiều kiểu chào ngẫu nhiên
             GREETINGS=(
-              "📢 Thầy ơi có file mới!"
-              "🎉 Ting ting! File mới nè thầy!"
-              "📬 Thầy ơi, có bài nộp rồi!"
-              "🔔 Thầy ơi! Có file mới sync!"
-              "✨ Wow! File mới đã đến!"
-              "📥 Alert: File mới cho thầy!"
-              "🚀 Có file mới sync xong rồi thầy!"
-              "💌 Thầy ơi có quà (file mới)!"
+              "Thầy ơi có file mới"
+              "Đại ca ơi, có file mới nè"
+              "Ê có file mới kìa"
+              "Boss ơi, file mới sync xong"
+              "Có file mới rồi nha"
+              "File mới sync xong rồi đó"
+              "Thầy ơi có bài nộp rồi"
+              "Cập nhật: có file mới"
             )
             GREETING="${GREETINGS[$((RANDOM % ${#GREETINGS[@]}))]}"
             
@@ -147,12 +147,12 @@ jobs:
               IFS='|' read -ra NAMES <<< "$FILENAMES"
               for name in "${NAMES[@]}"; do
                 if [ -n "$name" ]; then
-                  FILELIST="${FILELIST}"$'\n'"📄 ${name}"
+                  FILELIST="${FILELIST}"$'\n'"- ${name}"
                 fi
               done
             fi
             
-            MESSAGE="${GREETING}"$'\n\n'"🔄 Đã sync ${FILES} file (${NOW})${FILELIST}"
+            MESSAGE="${GREETING}"$'\n'"Sync ${FILES} file luc ${NOW}${FILELIST}"
             
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${CHAT_ID}" \
