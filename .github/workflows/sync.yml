@@ -138,7 +138,9 @@ jobs:
           NOW=$(date '+%H:%M:%S')
           FILES=${FILES:-0}
           
-          # Chỉ gửi thông báo khi có file mới
+          echo "DEBUG: FILES=$FILES, FILENAMES=$FILENAMES"
+          
+          # Gửi thông báo khi có file mới
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
             # Nhiều kiểu chào ngẫu nhiên
             GREETINGS=(
