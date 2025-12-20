@@ -166,23 +166,25 @@ jobs:
           
           # Gửi thông báo khi có file mới
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
-            # Nhiều kiểu chào ngẫu nhiên
+            # Random Penguin, Clown, Frog greetings
             GREETINGS=(
-              "Thầy ơi có file mới"
-              "Đại ca ơi, có file mới"
-              "file vừa sync xong"
+              "🐧 Thầy ơi hàng về! 🐧"
+              "🤡 Đại ca ơi, có file mới nè 🤡"
+              "🐸 Ộp ộp! File mới cập bến 🐸"
+              "🐧🤡🐸 Combo hủy diệt: File mới đây!"
             )
             GREETING="${GREETINGS[$((RANDOM % ${#GREETINGS[@]}))]}"
             
-            # Tạo danh sách file
+            # Tạo danh sách file màu mè
             FILELIST=""
             if [ -n "$FILENAMES" ]; then
               IFS='|' read -ra NAMES <<< "$FILENAMES"
               for name in "${NAMES[@]}"; do
                 if [ -n "$name" ]; then
-                  FILELIST="${FILELIST}"$'\n'"- ${name}"
+                  FILELIST="${FILELIST}"$'\n'"✨ ${name}"
                 fi
               done
+            fi
             fi
             
             MESSAGE="${GREETING}"$'\n'"Sync ${FILES} file luc ${NOW}${FILELIST}"
