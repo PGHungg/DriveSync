@@ -370,20 +370,34 @@ export default {
 
     // Cron Trigger: Auto sync mỗi 2 phút (Turbo Mode)
     async scheduled(event, env, ctx) {
-        // Load Balancing: Chọn ngẫu nhiên 1 trong 2 repo
-        const repos = [
+        // Load Balancing với Smart Failover
+        // 1. Randomize thứ tự để chia tải
+        let repos = [
             env.GITHUB_REPO || 'GiaHung07/DriveSync',
             'PGHungg/DriveSync'
         ];
-        // Lọc bỏ trùng lặp nếu env.GITHUB_REPO là PGHungg/DriveSync
-        const uniqueRepos = [...new Set(repos)];
 
-        const randomRepo = uniqueRepos[Math.floor(Math.random() * uniqueRepos.length)];
+        // Shuffle array
+        repos = repos.sort(() => Math.random() - 0.5);
+        // Lọc trùng
+        repos = [...new Set(repos)];
+
         const GH_TOKEN = env.GITHUB_TOKEN;
+        if (!GH_TOKEN) return;
 
-        if (GH_TOKEN) {
-            const ok = await triggerSync(randomRepo, GH_TOKEN);
-            console.log(`Turbo Sync: Triggered ${randomRepo} - ${ok ? 'Success' : 'Failed'}`);
+        // 2. Try từng repo, nếu lỗi thử cái tiếp theo
+        for (const repo of repos) {
+            try {
+                const ok = await triggerSync(repo, GH_TOKEN);
+                if (ok) {
+                    console.log(`Turbo Sync: Triggered SUCCESS on ${repo}`);
+                    break; // Thành công thì dừng, không spam repo kia
+                } else {
+                    console.log(`Turbo Sync: Failed on ${repo}, trying next...`);
+                }
+            } catch (e) {
+                console.error(`Turbo Sync: Error on ${repo}:`, e);
+            }
         }
     }
 };

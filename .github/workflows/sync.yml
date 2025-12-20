@@ -7,6 +7,10 @@ on:
   repository_dispatch:
     types: [sync-trigger]
 
+concurrency:
+  group: sync-gdrive
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
