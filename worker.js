@@ -230,14 +230,83 @@ async function cmdHelp(token, chatId) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 🚀 MAIN HANDLER
+// � GOOGLE DRIVE WEBHOOK
+// ═══════════════════════════════════════════════════════════════
+
+async function getAccessToken(env) {
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            client_id: env.GOOGLE_CLIENT_ID,
+            client_secret: env.GOOGLE_CLIENT_SECRET,
+            refresh_token: env.GOOGLE_REFRESH_TOKEN,
+            grant_type: 'refresh_token'
+        })
+    });
+    const data = await res.json();
+    return data.access_token;
+}
+
+async function setupDriveWatch(env, folderId, webhookUrl) {
+    const accessToken = await getAccessToken(env);
+    const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${folderId}/watch`,
+        {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: 'drive-sync-' + Date.now(),
+                type: 'web_hook',
+                address: webhookUrl,
+                expiration: Date.now() + (7 * 24 * 60 * 60 * 1000)
+            })
+        }
+    );
+    return res.json();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// �🚀 MAIN HANDLER
 // ═══════════════════════════════════════════════════════════════
 
 export default {
     async fetch(request, env) {
-        if (request.method !== 'POST') {
-            return new Response('🤖 Drive Sync Bot v3.0 - Running', { status: 200 });
+        const url = new URL(request.url);
+
+        // Google Drive Webhook endpoint
+        if (url.pathname === '/drive-webhook') {
+            const resourceState = request.headers.get('X-Goog-Resource-State');
+            if (resourceState === 'change' || resourceState === 'update') {
+                const REPO = env.GITHUB_REPO || 'GiaHung07/DriveSync';
+                if (env.GITHUB_TOKEN) {
+                    await triggerSync(REPO, env.GITHUB_TOKEN);
+                    console.log('Drive webhook: sync triggered!');
+                }
+            }
+            return new Response('OK', { status: 200 });
         }
+
+        // Setup watch endpoint
+        if (url.pathname === '/setup-watch' && request.method === 'POST') {
+            try {
+                const { folderId } = await request.json();
+                const result = await setupDriveWatch(env, folderId, url.origin + '/drive-webhook');
+                return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+            } catch (e) {
+                return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+            }
+        }
+
+        // Status page
+        if (request.method === 'GET') {
+            return new Response('🤖 Drive Sync Bot v4.0 - Webhook Active', { status: 200 });
+        }
+
+        // Telegram handler (POST to root)
 
         const TOKEN = env.BOT_TOKEN;
         const CHAT_ID = env.CHAT_ID;
