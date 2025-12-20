@@ -166,6 +166,11 @@ jobs:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          # Re-read outputs from sync step
+          FILES="${{ steps.sync.outputs.files }}"
+          FILENAMES="${{ steps.sync.outputs.filenames }}"
+          NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d %H:%M:%S')
+
           # Chỉ gửi khi có file
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
             # Decode content
