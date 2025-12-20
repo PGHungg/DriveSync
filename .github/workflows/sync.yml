@@ -40,8 +40,6 @@ jobs:
           echo "Starting sync..."
           
           TOTAL=0
-          LOG1="/tmp/sync1.log"
-          LOG2="/tmp/sync2.log"
           FILELIST="/tmp/files.txt"
           > "$FILELIST"
           
@@ -55,113 +53,132 @@ jobs:
             DST1=$(echo "$PAIR1" | cut -d':' -f2)
             echo "Pair 1: $SRC1 -> $DST1"
             
-            # List source files
-            echo "Files in source $SRC1:"
-            rclone lsf "gdrive:${SRC1}" 2>&1 || true
-            
-            # List dest files BEFORE sync
-            echo "Files in dest $DST1 BEFORE:"
-            rclone lsf "gdrive:${DST1}" 2>&1 || true
-            BEFORE1=$(rclone lsf "gdrive:${DST1}" 2>/dev/null | wc -l)
-            
-            # Do the sync
+            # Sync với verbose log
             rclone copy "gdrive:${SRC1}" "gdrive:${DST1}" \
               --exclude "*.tmp" --exclude "Thumbs.db" \
-              -v --stats-one-line --stats 0 --retries 3 2>&1 | tee "$LOG1" || true
+              -v 2>&1 | tee /tmp/log1.txt || true
             
-            # Parse rclone log to find copied files (Pair 1)
-            C1=$(grep -c ": Copied" "$LOG1" || true)
-            echo "Pair 1: Copied=$C1"
+            # Đếm file copied
+            C1=$(grep -c ": Copied" /tmp/log1.txt 2>/dev/null || echo "0")
+            C1=${C1:-0}
+            echo "Pair 1 copied: $C1"
             
             if [ "$C1" -gt 0 ]; then
               echo "📦 $SRC1 -> $DST1" >> "$FILELIST"
-              grep ": Copied" "$LOG1" | sed -E 's/.* : (.*): Copied.*/  - \1/' | head -10 >> "$FILELIST" || true
-              echo "" >> "$FILELIST"
+              grep ": Copied" /tmp/log1.txt | sed 's/.*: Copied.*//' | sed 's/.*INFO  : /  - /' | head -5 >> "$FILELIST"
             fi
             TOTAL=$((TOTAL + C1))
           fi
           
           # Sync pair 2
-          if [ -n "$PAIR2" ]; then
+          if [ -n "$PAIR2" ] && [ "$PAIR2" != "$PAIR1" ]; then
             SRC2=$(echo "$PAIR2" | cut -d':' -f1)
             DST2=$(echo "$PAIR2" | cut -d':' -f2)
             echo "Pair 2: $SRC2 -> $DST2"
             
-            # Sync with logging
             rclone copy "gdrive:${SRC2}" "gdrive:${DST2}" \
               --exclude "*.tmp" --exclude "Thumbs.db" \
-              -v --stats-one-line --stats 0 --retries 3 2>&1 | tee "$LOG2" || true
+              -v 2>&1 | tee /tmp/log2.txt || true
             
-            C2=$(grep -c ": Copied" "$LOG2" || true)
-            echo "Pair 2: Copied=$C2"
+            C2=$(grep -c ": Copied" /tmp/log2.txt 2>/dev/null || echo "0")
+            C2=${C2:-0}
+            echo "Pair 2 copied: $C2"
             
             if [ "$C2" -gt 0 ]; then
               echo "📦 $SRC2 -> $DST2" >> "$FILELIST"
-              grep ": Copied" "$LOG2" | sed -E 's/.* : (.*): Copied.*/  - \1/' | head -10 >> "$FILELIST" || true
-              echo "" >> "$FILELIST"
+              grep ": Copied" /tmp/log2.txt | sed 's/.*: Copied.*//' | sed 's/.*INFO  : /  - /' | head -5 >> "$FILELIST"
             fi
             TOTAL=$((TOTAL + C2))
           fi
           
-          echo "TOTAL FILES COPIED: $TOTAL"
+          echo "=== TOTAL: $TOTAL files ==="
           echo "files=$TOTAL" >> $GITHUB_OUTPUT
           
-          # Prepare output
-          if [ -s "$FILELIST" ]; then
-             CONTENT=$(cat "$FILELIST")
-          else
-             CONTENT="✅ Scan complete. No new files found."
-          fi
-          
-          # Base64 encode
-          EncodedContent=$(echo "$CONTENT" | base64 -w 0)
-          echo "filenames=$EncodedContent" >> $GITHUB_OUTPUT
+          # Save file list
+          cat "$FILELIST" || true
+          cp "$FILELIST" /tmp/notify.txt || true
 
       - name: Update state.json
         if: always()
         run: |
           FILES="${{ steps.sync.outputs.files }}"
-          # ... existing code ...
+          FILES=${FILES:-0}
+          NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d %H:%M:%S')
+          
+          echo "Updating state: $FILES files at $NOW"
+          
+          # Create if not exists
+          if [ ! -f state.json ]; then
+            echo '{"stats":{"totalSyncs":0,"totalFiles":0,"lastSync":""},"history":[]}' > state.json
+          fi
+          
+          # Update with jq
+          jq --arg now "$NOW" --argjson files "$FILES" \
+             '.stats.totalSyncs += 1 | .stats.totalFiles += $files | .stats.lastSync = $now | .history = ([{"time": $now, "files": $files}] + .history)[:50]' \
+             state.json > tmp.json && mv tmp.json state.json
+          
+          cat state.json
 
-# ... (skip to notification step) ...
+      - name: Commit state
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "Sync $(TZ='Asia/Ho_Chi_Minh' date '+%H:%M')"
+          git push || true
 
-      - name: Send Telegram notification
+      - name: Telegram notification
         if: always()
         env:
-          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Re-read outputs
           FILES="${{ steps.sync.outputs.files }}"
-          FILENAMES="${{ steps.sync.outputs.filenames }}"
-          NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d %H:%M:%S')
-
-          # Force Notify on Manual Trigger
-          SHOULD_SEND="false"
-          if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
-             SHOULD_SEND="true"
-          elif [ "${{ github.event_name }}" == "repository_dispatch" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-             SHOULD_SEND="true"
+          FILES=${FILES:-0}
+          NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%H:%M:%S')
+          EVENT="${{ github.event_name }}"
+          
+          echo "Files: $FILES, Event: $EVENT"
+          
+          # Determine if we should send
+          SEND="no"
+          if [ "$FILES" -gt 0 ]; then
+            SEND="yes"
+          elif [ "$EVENT" = "repository_dispatch" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+            SEND="yes"
           fi
+          
+          if [ "$SEND" = "yes" ]; then
+            # Build message
+            if [ "$FILES" -gt 0 ] && [ -f /tmp/notify.txt ]; then
+              DETAILS=$(cat /tmp/notify.txt | head -20)
+              MSG="🚀 *Sync Complete!*
+🕒 $NOW
+📁 $FILES file(s) copied
 
-          if [ "$SHOULD_SEND" == "true" ]; then
-            # Decode content
-            if [ -n "$FILENAMES" ]; then
-               FILE_CONTENT=$(echo "$FILENAMES" | base64 -d)
+$DETAILS
+
+---
+💡 /sync • /status"
             else
-               FILE_CONTENT="⚠️ No info available"
+              MSG="✅ *Sync Complete!*
+🕒 $NOW
+📁 No new files
+
+---
+💡 /sync • /status"
             fi
             
-            MESSAGE="🚀 *Sync Report* "$'\n'"🕒 ${NOW}"$'\n\n'"${FILE_CONTENT}"$'\n'"---"$'\n'"💡 /sync • /status"
-            
-            # Send (Verify Token exists)
-            if [ -n "$TOKEN" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-                  -d chat_id="${CHAT_ID}" \
-                  -d text="${MESSAGE}" \
-                  -d parse_mode="Markdown"
+            # Send
+            if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                -d "chat_id=${CHAT_ID}" \
+                -d "text=${MSG}" \
+                -d "parse_mode=Markdown" || echo "Curl failed"
             else
-                echo "❌ Error: Missing TELEGRAM_BOT_TOKEN in GitHub Secrets!"
+              echo "Missing BOT_TOKEN or CHAT_ID!"
             fi
+          else
+            echo "Skipping notification (scheduled run with 0 files)"
           fi
-          # End of script
