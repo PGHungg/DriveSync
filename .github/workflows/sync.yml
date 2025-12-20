@@ -88,7 +88,7 @@ jobs:
             echo "Pair 2: $SRC2 -> $DST2"
             
             # Sync with logging
-            rclone copy "gdrive:${SRC2}" "gdrive:${DEST2}" \
+            rclone copy "gdrive:${SRC2}" "gdrive:${DST2}" \
               --exclude "*.tmp" --exclude "Thumbs.db" \
               -v --stats-one-line --stats 0 --retries 3 2>&1 | tee "$LOG2" || true
             
@@ -106,59 +106,24 @@ jobs:
           echo "TOTAL FILES COPIED: $TOTAL"
           echo "files=$TOTAL" >> $GITHUB_OUTPUT
           
-          # Prepare content for notification (preserve newlines)
+          # Prepare output
           if [ -s "$FILELIST" ]; then
              CONTENT=$(cat "$FILELIST")
-             # Use base64 to safeguard multiline strings in GitHub Actions
-             EncodedContent=$(echo "$CONTENT" | base64 -w 0)
-             echo "filenames=$EncodedContent" >> $GITHUB_OUTPUT
           else
-             echo "filenames=" >> $GITHUB_OUTPUT
+             CONTENT="✅ Scan complete. No new files found."
           fi
+          
+          # Base64 encode
+          EncodedContent=$(echo "$CONTENT" | base64 -w 0)
+          echo "filenames=$EncodedContent" >> $GITHUB_OUTPUT
 
       - name: Update state.json
         if: always()
         run: |
           FILES="${{ steps.sync.outputs.files }}"
-          NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d %H:%M:%S')
-          FILES=${FILES:-0}
-          
-          echo "Updating state.json with $FILES files at $NOW"
-          
-          # Only create if not exists (Fix Reset Bug)
-          if [ ! -f state.json ]; then
-            echo '{"stats":{"totalSyncs":0,"totalFiles":0,"lastSync":""},"history":[]}' > state.json
-          fi
-          
-          # Read file details if available
-          if [ -s /tmp/files.txt ]; then
-            DETAILS=$(cat /tmp/files.txt | head -c 500) # Limit size
-          else
-            DETAILS=""
-          fi
-          
-          # Update existing (Should always exist now)
-          if [ -f state.json ]; then
-            jq --arg now "$NOW" \
-               --argjson files "$FILES" \
-               --arg details "$DETAILS" \
-               '.stats.totalSyncs = (.stats.totalSyncs // 0) + 1 | 
-                .stats.totalFiles = (.stats.totalFiles // 0) + $files | 
-                .stats.lastSync = $now | 
-                .history = ([{"time": $now, "files": $files, "details": $details}] + (.history // [])) | 
-                .history = .history[:50]' state.json > tmp.json && mv tmp.json state.json
-          fi
-          
-          cat state.json
+          # ... existing code ...
 
-      - name: Commit state.json
-        if: always()
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add state.json
-          git diff --staged --quiet || git commit -m "Sync $(date '+%H:%M')"
-          git push || true
+# ... (skip to notification step) ...
 
       - name: Send Telegram notification
         if: always()
@@ -166,23 +131,17 @@ jobs:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Re-read outputs from sync step
+          # Re-read outputs
           FILES="${{ steps.sync.outputs.files }}"
           FILENAMES="${{ steps.sync.outputs.filenames }}"
           NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d %H:%M:%S')
 
-          # Logic: Gửi khi có file HOẶC khi chạy thủ công (repository_dispatch)
-          FORCE_NOTIFY="false"
-          if [ "${{ github.event_name }}" == "repository_dispatch" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-             FORCE_NOTIFY="true"
-          fi
-
+          # Force Notify on Manual Trigger
+          SHOULD_SEND="false"
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
              SHOULD_SEND="true"
-          elif [ "$FORCE_NOTIFY" == "true" ]; then
+          elif [ "${{ github.event_name }}" == "repository_dispatch" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
              SHOULD_SEND="true"
-          else
-             SHOULD_SEND="false"
           fi
 
           if [ "$SHOULD_SEND" == "true" ]; then
@@ -190,17 +149,19 @@ jobs:
             if [ -n "$FILENAMES" ]; then
                FILE_CONTENT=$(echo "$FILENAMES" | base64 -d)
             else
-               FILE_CONTENT=""
+               FILE_CONTENT="⚠️ No info available"
             fi
             
             MESSAGE="🚀 *Sync Report* "$'\n'"🕒 ${NOW}"$'\n\n'"${FILE_CONTENT}"$'\n'"---"$'\n'"💡 /sync • /status"
             
-            # Send to Telegram
-            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-              -d chat_id="${CHAT_ID}" \
-              -d text="${MESSAGE}" \
-              -d parse_mode="Markdown"
-          else
-            echo "No files synced. Skipping notification."
+            # Send (Verify Token exists)
+            if [ -n "$TOKEN" ]; then
+                curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+                  -d chat_id="${CHAT_ID}" \
+                  -d text="${MESSAGE}" \
+                  -d parse_mode="Markdown"
+            else
+                echo "❌ Error: Missing TELEGRAM_BOT_TOKEN in GitHub Secrets!"
+            fi
           fi
           # End of script
