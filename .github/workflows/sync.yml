@@ -125,10 +125,10 @@ jobs:
           
           echo "Updating state.json with $FILES files at $NOW"
           
-          # Reset to simple format if needed
-          cat > state.json << 'EOF'
-          {"stats":{"totalSyncs":0,"totalFiles":0,"lastSync":""},"history":[]}
-          EOF
+          # Only create if not exists (Fix Reset Bug)
+          if [ ! -f state.json ]; then
+            echo '{"stats":{"totalSyncs":0,"totalFiles":0,"lastSync":""},"history":[]}' > state.json
+          fi
           
           # Read file details if available
           if [ -s /tmp/files.txt ]; then
@@ -137,7 +137,7 @@ jobs:
             DETAILS=""
           fi
           
-          # Hoặc update existing
+          # Update existing (Should always exist now)
           if [ -f state.json ]; then
             jq --arg now "$NOW" \
                --argjson files "$FILES" \
@@ -171,8 +171,21 @@ jobs:
           FILENAMES="${{ steps.sync.outputs.filenames }}"
           NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d %H:%M:%S')
 
-          # Chỉ gửi khi có file
+          # Logic: Gửi khi có file HOẶC khi chạy thủ công (repository_dispatch)
+          FORCE_NOTIFY="false"
+          if [ "${{ github.event_name }}" == "repository_dispatch" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+             FORCE_NOTIFY="true"
+          fi
+
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
+             SHOULD_SEND="true"
+          elif [ "$FORCE_NOTIFY" == "true" ]; then
+             SHOULD_SEND="true"
+          else
+             SHOULD_SEND="false"
+          fi
+
+          if [ "$SHOULD_SEND" == "true" ]; then
             # Decode content
             if [ -n "$FILENAMES" ]; then
                FILE_CONTENT=$(echo "$FILENAMES" | base64 -d)
