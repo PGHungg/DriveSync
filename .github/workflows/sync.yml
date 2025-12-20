@@ -65,18 +65,15 @@ jobs:
               --exclude "*.tmp" --exclude "Thumbs.db" \
               -v --stats-one-line --stats 0 --retries 3 2>&1 | tee "$LOG1" || true
             
-            # List dest files AFTER sync
-            AFTER1=$(rclone lsf "gdrive:${DST1}" 2>/dev/null | wc -l)
-            C1=$((AFTER1 - BEFORE1))
-            if [ "$C1" -lt 0 ]; then C1=0; fi
+            # Parse rclone log to find copied files
+            # Format: ... : filename: Copied ...
+            C1=$(grep -c ": Copied" "$LOG1" || true)
+            echo "Pair 1: Copied=$C1"
             
-            echo "Pair 1: Before=$BEFORE1, After=$AFTER1, Copied=$C1"
-            TOTAL=$((TOTAL + C1))
-            
-            # Get file names from source (for notification) - include nested files
             if [ "$C1" -gt 0 ]; then
-              rclone lsf "gdrive:${SRC1}" --recursive 2>/dev/null | grep -v '/$' | head -10 >> "$FILELIST" || true
+              grep ": Copied" "$LOG1" | sed -E 's/.* : (.*): Copied.*/\1/' | head -10 >> "$FILELIST" || true
             fi
+            TOTAL=$((TOTAL + C1))
           fi
           
           # Sync pair 2
@@ -85,26 +82,18 @@ jobs:
             DST2=$(echo "$PAIR2" | cut -d':' -f2)
             echo "Pair 2: $SRC2 -> $DST2"
             
-            # Count dest files BEFORE sync
-            BEFORE2=$(rclone lsf "gdrive:${DST2}" 2>/dev/null | wc -l)
-            
-            # Do the sync
-            rclone copy "gdrive:${SRC2}" "gdrive:${DST2}" \
+            # Sync with logging
+            rclone copy "gdrive:${SRC2}" "gdrive:${DEST2}" \
               --exclude "*.tmp" --exclude "Thumbs.db" \
               -v --stats-one-line --stats 0 --retries 3 2>&1 | tee "$LOG2" || true
             
-            # Count dest files AFTER sync
-            AFTER2=$(rclone lsf "gdrive:${DST2}" 2>/dev/null | wc -l)
-            C2=$((AFTER2 - BEFORE2))
-            if [ "$C2" -lt 0 ]; then C2=0; fi
+            C2=$(grep -c ": Copied" "$LOG2" || true)
+            echo "Pair 2: Copied=$C2"
             
-            echo "Pair 2: Before=$BEFORE2, After=$AFTER2, Copied=$C2"
-            TOTAL=$((TOTAL + C2))
-            
-            # Get file names for notification - include nested files
             if [ "$C2" -gt 0 ]; then
-              rclone lsf "gdrive:${SRC2}" --recursive 2>/dev/null | grep -v '/$' | head -10 >> "$FILELIST" || true
+              grep ": Copied" "$LOG2" | sed -E 's/.* : (.*): Copied.*/\1/' | head -10 >> "$FILELIST" || true
             fi
+            TOTAL=$((TOTAL + C2))
           fi
           
           echo "TOTAL FILES COPIED: $TOTAL"
@@ -166,22 +155,21 @@ jobs:
           
           # Gửi thông báo khi có file mới
           if [ "$FILES" != "0" ] && [ -n "$FILES" ]; then
-            # Random Penguin, Clown, Frog greetings
+            # Simple greetings (No Emojis)
             GREETINGS=(
-              "🐧 Thầy ơi hàng về! 🐧"
-              "🤡 Đại ca ơi, có file mới nè 🤡"
-              "🐸 Ộp ộp! File mới cập bến 🐸"
-              "🐧🤡🐸 Combo hủy diệt: File mới đây!"
+              "Thầy ơi có file mới"
+              "Đại ca ơi, có file mới"
+              "File vừa sync xong báu vật"
             )
             GREETING="${GREETINGS[$((RANDOM % ${#GREETINGS[@]}))]}"
             
-            # Tạo danh sách file màu mè
+            # Tạo danh sách file (Simple format)
             FILELIST=""
             if [ -n "$FILENAMES" ]; then
               IFS='|' read -ra NAMES <<< "$FILENAMES"
               for name in "${NAMES[@]}"; do
                 if [ -n "$name" ]; then
-                  FILELIST="${FILELIST}"$'\n'"✨ ${name}"
+                  FILELIST="${FILELIST}"$'\n'"- ${name}"
                 fi
               done
             fi
